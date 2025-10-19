@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_epub_viewer/src/epub_metadata.dart';
 import 'package:flutter_epub_viewer/src/helper.dart';
@@ -57,14 +58,109 @@ class EpubController {
     return _chapters;
   }
 
-  ///Parsing chapters list form epub
+  dynamic _normalizeJsValue(dynamic value) {
+    if (value == null) return null;
+
+    // If it's a Map with arbitrary key/value types
+    if (value is Map) {
+      final Map<String, dynamic> out = {};
+      value.forEach((k, v) {
+        final key = k?.toString() ?? '';
+        out[key] = _normalizeJsValue(v);
+      });
+      return out;
+    }
+
+    // If it's a List — normalize its elements recursively
+    if (value is List) {
+      return value.map((e) => _normalizeJsValue(e)).toList();
+    }
+
+    // If it's a String — try parsing JSON (iOS sometimes returns JSON string)
+    if (value is String) {
+      final trimmed = value.trim();
+      if ((trimmed.startsWith('{') && trimmed.endsWith('}')) ||
+          (trimmed.startsWith('[') && trimmed.endsWith(']'))) {
+        try {
+          final decoded = jsonDecode(trimmed);
+          return _normalizeJsValue(decoded);
+        } catch (_) {
+          // Not JSON — return as is
+        }
+      }
+      return value;
+    }
+
+    // Primitive types (num, bool, etc.)
+    return value;
+  }
+
+  /// Parses chapters from the WebView by calling `getChapters()` JS function.
+  /// Automatically handles platform differences between Android and iOS.
   Future<List<EpubChapter>> parseChapters() async {
+    // Return cached chapters if already loaded
     if (_chapters.isNotEmpty) return _chapters;
+
+    // Ensure the book is loaded
     checkEpubLoaded();
-    final result =
-        await webViewController!.evaluateJavascript(source: 'getChapters()');
-    _chapters =
-        List<EpubChapter>.from(result.map((e) => EpubChapter.fromJson(e)));
+
+    dynamic result;
+    try {
+      // Call JS function in the WebView
+      result = await webViewController!.evaluateJavascript(source: 'getChapters()');
+    } catch (e, s) {
+      debugPrint('❌ evaluateJavascript error: $e\n$s');
+      rethrow;
+    }
+
+    debugPrint('JS raw result runtimeType: ${result.runtimeType}');
+
+    // Normalize the JS result into Dart-friendly types
+    final normalized = _normalizeJsValue(result);
+    debugPrint('JS normalized type: ${normalized.runtimeType}');
+    // debugPrint('JS normalized sample: $normalized'); // Optional for debugging
+
+    // Convert the normalized result into a List
+    List<dynamic> items = [];
+    if (normalized is List) {
+      items = normalized;
+    } else if (normalized is Map && normalized.containsKey('chapters')) {
+      // Sometimes JS returns { chapters: [...] }
+      final maybe = normalized['chapters'];
+      if (maybe is List) items = maybe;
+    } else if (normalized == null) {
+      items = [];
+    } else {
+      // Unexpected format — log a warning
+      debugPrint('⚠️ Unexpected chapters payload: ${normalized.runtimeType}');
+      items = [];
+    }
+
+    // Convert each item into EpubChapter
+    final List<EpubChapter> chapters = [];
+    for (var i = 0; i < items.length; i++) {
+      final e = items[i];
+      try {
+        if (e is Map<String, dynamic>) {
+          chapters.add(EpubChapter.fromJson(e));
+        } else {
+          // If element is still not Map<String,dynamic>, normalize again
+          final converted = _normalizeJsValue(e);
+          if (converted is Map<String, dynamic>) {
+            chapters.add(EpubChapter.fromJson(converted));
+          } else {
+            debugPrint('⚠️ Skipping chapter #$i — cannot convert to Map: ${converted.runtimeType}');
+          }
+        }
+      } catch (err, st) {
+        debugPrint('❌ Error parsing chapter #$i: $err\n$st');
+        // Continue parsing other chapters
+      }
+    }
+
+    // Cache the chapters
+    _chapters = chapters;
+
     return _chapters;
   }
 
