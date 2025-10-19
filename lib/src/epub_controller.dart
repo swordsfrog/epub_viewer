@@ -48,7 +48,9 @@ class EpubController {
       throw Exception("Epub locations not loaded");
     }
 
-    return EpubLocation.fromJson(result);
+    final normalized = _normalizeJsValue(result);
+
+    return EpubLocation.fromJson(normalized);
   }
 
   ///Returns list of [EpubChapter] from epub,
@@ -168,7 +170,8 @@ class EpubController {
     checkEpubLoaded();
     final result =
         await webViewController!.evaluateJavascript(source: 'getBookInfo()');
-    return EpubMetadata.fromJson(result);
+    final normalized = _normalizeJsValue(result);
+    return EpubMetadata.fromJson(normalized);
   }
 
   Completer searchResultCompleter = Completer<List<EpubSearchResult>>();
